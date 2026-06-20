@@ -67,8 +67,5 @@ clickY := (y + 418)
 
 ClickWithMarker(clickX, clickY)
 
-Sleep(2000)
-ToolTip("Done")
-
 ; done
 ExitApp(0)

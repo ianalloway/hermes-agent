@@ -194,6 +194,7 @@ jobs:
           # ffmpeg's progress output would fill the pipe buffer and block.
           Write-Host "ffmpeg recording started (pid $($ffmpeg.Id))"
 
+          $installerSuccess = $false
           try {
             # Launch the real installer
             $proc = Start-Process -FilePath $installer -PassThru -NoNewWindow
@@ -210,8 +211,11 @@ jobs:
               Stop-Process -Id $ahkProc.Id -Force -ErrorAction SilentlyContinue
             }
 
-            # Leave the installer running briefly for the recording, then stop it.
-            Start-Sleep -Seconds 5
+            # Leave the installer running, with timeout
+            $ahkProc | Wait-Process -Timeout 240 -ErrorAction SilentlyContinue
+            if (-not $proc -or $proc.HasExited) {
+              $installerSuccess = $true
+            }
             if ($proc -and -not $proc.HasExited) {
               Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
             }
@@ -345,7 +349,6 @@ jobs:
           retention-days: 1
           archive: false
           overwrite: true
-
 
       - name: Convert screen recording to compact GIF
         if: always()
