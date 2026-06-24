@@ -200,7 +200,7 @@ jobs:
             $proc = Start-Process -FilePath $installer -PassThru -NoNewWindow
             $proc.Id | Out-File installer.pid
 
-            $e2eDir = $env:RUNNER_TEMP\e2e-windows
+            $e2eDir = "$env:RUNNER_TEMP\e2e-windows"
 
             Copy-Item -Path "$env:INSTALL_DIR\e2e\windows"  -Destination $e2eDir 
 
