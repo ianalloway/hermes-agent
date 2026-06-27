@@ -6,6 +6,7 @@ Diagnoses issues with Hermes Agent setup.
 
 import json
 import os
+import shlex
 import sys
 import subprocess
 import shutil
@@ -64,6 +65,12 @@ _MEMORY_HEADROOM_WARN_RATIO = 0.80
 _SKILL_SPRAWL_WARN_COUNT = 120
 _AGENT_SKILL_REVIEW_WARN_COUNT = 10
 _CURATOR_STALE_WARN_DAYS = 14
+_SKILL_GUARD_SCAN_LIMIT = 25
+_MEMORY_FRAGMENTED_ENTRY_COUNT = 20
+_MEMORY_FRAGMENTED_AVG_CHARS = 80
+_CONTEXT_FILE_CHARS_PER_TOKEN = 4
+_CONTEXT_FILE_BUDGET_WARN_RATIO = 0.25
+_SMALL_CONTEXT_WINDOW_TOKENS = 64_000
 
 
 from hermes_constants import is_termux as _is_termux
@@ -256,6 +263,26 @@ def _read_memory_char_count(path: Path) -> int | None:
         return None
 
 
+def _memory_file_stats(path: Path) -> dict[str, int | float] | None:
+    try:
+        text = path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return None
+    if not text:
+        return {"chars": 0, "entries": 0, "duplicates": 0, "avg_chars": 0.0}
+    entries = [entry.strip() for entry in text.split("\n§\n") if entry.strip()]
+    if not entries:
+        entries = [text]
+    duplicates = len(entries) - len(set(entries))
+    avg_chars = sum(len(entry) for entry in entries) / max(1, len(entries))
+    return {
+        "chars": len(text),
+        "entries": len(entries),
+        "duplicates": duplicates,
+        "avg_chars": avg_chars,
+    }
+
+
 def _read_skill_frontmatter_name(skill_md: Path) -> str:
     try:
         text = skill_md.read_text(encoding="utf-8", errors="replace")[:4000]
@@ -299,15 +326,19 @@ def _is_doctor_excluded_skill_path(path: Path) -> bool:
         return any(part in excluded for part in path.parts)
 
 
-def _active_skill_names(skills_dir: Path) -> set[str]:
+def _active_skill_index(skills_dir: Path) -> dict[str, Path]:
     if not skills_dir.exists():
-        return set()
-    names: set[str] = set()
+        return {}
+    index: dict[str, Path] = {}
     for skill_md in skills_dir.rglob("SKILL.md"):
         if _is_doctor_excluded_skill_path(skill_md):
             continue
-        names.add(_read_skill_frontmatter_name(skill_md))
-    return names
+        index.setdefault(_read_skill_frontmatter_name(skill_md), skill_md.parent)
+    return index
+
+
+def _active_skill_names(skills_dir: Path) -> set[str]:
+    return set(_active_skill_index(skills_dir))
 
 
 def _read_skill_usage(skills_dir: Path) -> dict:
@@ -366,6 +397,377 @@ def _curator_last_run_age_days(skills_dir: Path) -> int | None:
     return max(0, (now - last_run.astimezone(timezone.utc)).days)
 
 
+def _config_truthy(value: object) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, str):
+        return value.strip().lower() in {"1", "true", "yes", "on"}
+    return bool(value)
+
+
+def _model_config_snapshot(config: dict) -> dict[str, object]:
+    model_cfg = config.get("model") if isinstance(config, dict) else {}
+    if isinstance(model_cfg, str):
+        return {
+            "provider": "",
+            "model": model_cfg.strip(),
+            "base_url": "",
+            "context_length": None,
+            "max_tokens": config.get("max_tokens"),
+            "api_key": None,
+        }
+    if not isinstance(model_cfg, dict):
+        model_cfg = {}
+    return {
+        "provider": str(model_cfg.get("provider") or "").strip(),
+        "model": str(
+            model_cfg.get("default") or model_cfg.get("model") or model_cfg.get("name") or ""
+        ).strip(),
+        "base_url": str(model_cfg.get("base_url") or model_cfg.get("api_base") or "").strip(),
+        "context_length": model_cfg.get("context_length"),
+        "max_tokens": model_cfg.get("max_tokens", config.get("max_tokens")),
+        "api_key": model_cfg.get("api_key"),
+    }
+
+
+def _configured_provider_count(config: dict) -> int:
+    count = 0
+    providers = config.get("providers") if isinstance(config, dict) else {}
+    if isinstance(providers, dict):
+        count += len([name for name in providers if str(name).strip()])
+    custom = config.get("custom_providers") if isinstance(config, dict) else []
+    if isinstance(custom, list):
+        count += len([p for p in custom if isinstance(p, dict) and str(p.get("name") or "").strip()])
+    return count
+
+
+def _coerce_positive_int(value: object) -> int | None:
+    try:
+        number = int(value)
+    except (TypeError, ValueError):
+        return None
+    return number if number > 0 else None
+
+
+def _resolve_doctor_context_length(
+    model: str,
+    *,
+    provider: str = "",
+    base_url: str = "",
+    config_context_length: object = None,
+) -> int | None:
+    explicit = _coerce_positive_int(config_context_length)
+    if explicit:
+        return explicit
+    if not model:
+        return None
+    try:
+        from agent.model_metadata import get_model_context_length
+
+        return int(
+            get_model_context_length(
+                model,
+                provider=provider,
+                base_url=base_url,
+            )
+        )
+    except Exception:
+        return None
+
+
+def _fetch_doctor_account_usage(provider: str, base_url: str, api_key: object):
+    try:
+        from agent.account_usage import fetch_account_usage
+
+        key = str(api_key or "").strip() or None
+        return fetch_account_usage(provider, base_url=base_url or None, api_key=key)
+    except Exception:
+        return None
+
+
+def _check_provider_model_budget(config: dict, issues: list[str]) -> dict[str, object]:
+    snapshot = _model_config_snapshot(config)
+    provider = str(snapshot.get("provider") or "")
+    model = str(snapshot.get("model") or "")
+    base_url = str(snapshot.get("base_url") or "")
+    if provider and model:
+        check_ok("Active model pinned in config", f"({provider}:{model})")
+    elif model:
+        check_warn("Model configured without an explicit provider", f"({model})")
+        issues.append("Set model.provider so Hermes can audit provider-specific budget and context.")
+    else:
+        check_warn("No default model configured", "(run: hermes model)")
+        issues.append("Choose a default model with 'hermes model' or 'hermes setup'.")
+
+    configured_count = _configured_provider_count(config)
+    if configured_count:
+        check_ok(f"Custom/provider configs available ({configured_count})")
+
+    usage_supported = provider.lower() in {"openrouter", "openai-codex", "anthropic"}
+    if not usage_supported:
+        if provider:
+            check_info(f"No account-usage API wired for provider '{provider}'")
+        return snapshot
+
+    account = _fetch_doctor_account_usage(provider, base_url, snapshot.get("api_key"))
+    if account is None:
+        check_info(f"{provider} account usage unavailable or not authenticated")
+        return snapshot
+    unavailable = getattr(account, "unavailable_reason", None)
+    if unavailable:
+        check_warn(f"{provider} account usage unavailable", f"({unavailable})")
+        return snapshot
+
+    windows = tuple(getattr(account, "windows", ()) or ())
+    details = tuple(getattr(account, "details", ()) or ())
+    check_ok(
+        f"{provider} account usage available",
+        f"({len(windows)} window(s), {len(details)} detail line(s))",
+    )
+    for window in windows:
+        used = getattr(window, "used_percent", None)
+        label = getattr(window, "label", "quota")
+        if isinstance(used, (int, float)) and used >= 90:
+            check_warn(f"{provider} {label} nearly exhausted", f"({used:.0f}% used)")
+            issues.append(f"{provider} {label} quota is {used:.0f}% used; switch model/provider or top up before long tasks.")
+    for detail in details[:3]:
+        text = str(detail)
+        check_info(text)
+        if "depleted" in text.lower() or "balance: $0.00" in text.lower():
+            issues.append(f"{provider} account appears depleted; top up or switch providers.")
+    return snapshot
+
+
+def _check_mcp_server_availability(config: dict, issues: list[str]) -> None:
+    servers = config.get("mcp_servers") if isinstance(config, dict) else {}
+    if not isinstance(servers, dict) or not servers:
+        check_info("No MCP servers configured")
+        return
+
+    ok_count = 0
+    warn_count = 0
+    for name, entry in sorted(servers.items()):
+        if not isinstance(entry, dict):
+            check_warn(f"MCP server '{name}' has invalid config", "(expected object)")
+            warn_count += 1
+            issues.append(f"Fix mcp_servers.{name}; expected a mapping/object.")
+            continue
+        url = str(entry.get("url") or "").strip()
+        command = entry.get("command")
+        if url:
+            check_ok(f"MCP server '{name}' configured as remote", f"({url.split('?', 1)[0]})")
+            ok_count += 1
+            continue
+        if isinstance(command, list):
+            executable = str(command[0]).strip() if command else ""
+        else:
+            try:
+                parts = shlex.split(str(command or ""))
+            except ValueError:
+                parts = []
+            executable = parts[0] if parts else ""
+        if not executable:
+            check_warn(f"MCP server '{name}' has no command or url")
+            warn_count += 1
+            issues.append(f"Fix mcp_servers.{name}; set either url or command.")
+            continue
+        found = (
+            Path(os.path.expanduser(executable)).exists()
+            if ("/" in executable or "\\" in executable)
+            else bool(shutil.which(executable))
+        )
+        if found:
+            check_ok(f"MCP server '{name}' command is on PATH", f"({executable})")
+            ok_count += 1
+        else:
+            check_warn(f"MCP server '{name}' command not found", f"({executable})")
+            warn_count += 1
+            issues.append(f"Install '{executable}' or update mcp_servers.{name}.command.")
+    if ok_count and not warn_count:
+        check_ok(f"All configured MCP transports look reachable ({ok_count})")
+
+
+def _check_context_compression_risk(config: dict, model_snapshot: dict[str, object], issues: list[str]) -> None:
+    compression = config.get("compression") if isinstance(config, dict) else {}
+    compression = compression if isinstance(compression, dict) else {}
+    if compression.get("enabled", True) is False:
+        check_warn("Automatic context compression disabled", "(compression.enabled: false)")
+        issues.append("Enable compression.enabled for long autonomous runs, or plan to use /compress manually.")
+    else:
+        threshold = compression.get("threshold", 0.50)
+        try:
+            threshold_float = float(threshold)
+        except (TypeError, ValueError):
+            threshold_float = 0.50
+        check_ok("Automatic context compression enabled", f"(threshold {threshold_float * 100:.0f}%)")
+        if threshold_float > 0.85:
+            check_warn("Compression threshold is very high", f"({threshold_float * 100:.0f}%)")
+            issues.append("Lower compression.threshold so Hermes compresses before providers reject long prompts.")
+
+    context_cfg = config.get("context") if isinstance(config, dict) else {}
+    engine = (context_cfg.get("engine") if isinstance(context_cfg, dict) else "") or "compressor"
+    if engine != "compressor":
+        check_info(f"Context engine override active: {engine}")
+
+    context_length = _resolve_doctor_context_length(
+        str(model_snapshot.get("model") or ""),
+        provider=str(model_snapshot.get("provider") or ""),
+        base_url=str(model_snapshot.get("base_url") or ""),
+        config_context_length=model_snapshot.get("context_length"),
+    )
+    if context_length is None:
+        check_info("Context window could not be resolved for active model")
+        return
+
+    max_tokens = _coerce_positive_int(model_snapshot.get("max_tokens"))
+    effective_input = context_length - (max_tokens or 0)
+    if effective_input <= 0:
+        check_warn("Configured max_tokens consumes the context window", f"({max_tokens}/{context_length})")
+        issues.append("Lower max_tokens or increase model.context_length; current settings leave no input budget.")
+        return
+    if context_length <= _SMALL_CONTEXT_WINDOW_TOKENS:
+        check_warn("Active model has a small context window", f"({context_length:,} tokens)")
+        issues.append("Use a larger-context model for browser autonomy, long coding sessions, or scheduled research jobs.")
+    else:
+        check_ok("Active model context window resolved", f"({context_length:,} tokens)")
+    if max_tokens and max_tokens > context_length * 0.40:
+        check_warn("max_tokens reserves a large share of the window", f"({max_tokens:,}/{context_length:,})")
+        issues.append("Reduce max_tokens unless long single responses are more important than input context.")
+
+    context_file_max = _coerce_positive_int(config.get("context_file_max_chars"))
+    if context_file_max:
+        estimated_tokens = context_file_max / _CONTEXT_FILE_CHARS_PER_TOKEN
+        if estimated_tokens > effective_input * _CONTEXT_FILE_BUDGET_WARN_RATIO:
+            check_warn(
+                "context_file_max_chars may crowd the prompt",
+                f"(~{estimated_tokens:,.0f} tokens vs {effective_input:,} input budget)",
+            )
+            issues.append("Lower context_file_max_chars or use a larger-context model to avoid startup context bloat.")
+
+
+def _read_cron_jobs_for_doctor() -> list[dict]:
+    jobs_path = HERMES_HOME / "cron" / "jobs.json"
+    if not jobs_path.exists():
+        return []
+    try:
+        data = json.loads(jobs_path.read_text(encoding="utf-8"), strict=False)
+    except (OSError, json.JSONDecodeError):
+        return []
+    if isinstance(data, dict):
+        jobs = data.get("jobs", [])
+    elif isinstance(data, list):
+        jobs = data
+    else:
+        return []
+    return [job for job in jobs if isinstance(job, dict)]
+
+
+def _check_scheduled_job_model_pins(config: dict, model_snapshot: dict[str, object], issues: list[str]) -> None:
+    jobs = _read_cron_jobs_for_doctor()
+    active_agent_jobs = [
+        job for job in jobs
+        if job.get("enabled", True) and not job.get("no_agent")
+    ]
+    if not active_agent_jobs:
+        check_info("No active agent-backed scheduled jobs")
+        return
+
+    current_provider = str(model_snapshot.get("provider") or "").strip().lower()
+    current_model = str(model_snapshot.get("model") or "").strip()
+    unpinned = []
+    drifted = []
+    for job in active_agent_jobs:
+        provider = str(job.get("provider") or "").strip()
+        model = str(job.get("model") or "").strip()
+        provider_snapshot = str(job.get("provider_snapshot") or "").strip().lower()
+        model_snapshot_value = str(job.get("model_snapshot") or "").strip()
+        if not provider or not model:
+            unpinned.append(job)
+        if not provider and provider_snapshot and current_provider and provider_snapshot != current_provider:
+            drifted.append(job)
+            continue
+        if not model and model_snapshot_value and current_model and model_snapshot_value != current_model:
+            drifted.append(job)
+
+    pinned_count = len(active_agent_jobs) - len(unpinned)
+    if pinned_count:
+        check_ok(f"{pinned_count} scheduled job(s) pin provider and model")
+    if unpinned:
+        check_warn(f"{len(unpinned)} scheduled job(s) follow global provider/model")
+        issues.append("Pin provider/model per important cron job so provider changes do not alter future runs.")
+    if drifted:
+        names = ", ".join(str(job.get("name") or job.get("id") or "job")[:30] for job in drifted[:3])
+        check_warn(f"{len(drifted)} scheduled job(s) have provider/model drift", f"({names})")
+        issues.append("Review cron jobs with provider/model drift; update or pin them intentionally.")
+
+
+def _agent_skill_guard_enabled(config: dict) -> bool:
+    skills_cfg = config.get("skills") if isinstance(config, dict) else {}
+    if not isinstance(skills_cfg, dict):
+        return False
+    return _config_truthy(skills_cfg.get("guard_agent_created"))
+
+
+def _check_agent_skill_guard_health(
+    config: dict,
+    active_index: dict[str, Path],
+    agent_created: set[str],
+    issues: list[str],
+) -> None:
+    if not agent_created:
+        return
+    if not _agent_skill_guard_enabled(config):
+        check_warn("Agent-created skill security scan disabled", "(skills.guard_agent_created: false)")
+        issues.append("Enable skills.guard_agent_created to scan future agent-created skill writes.")
+
+    try:
+        from tools.skills_guard import scan_skill
+    except Exception as exc:
+        check_warn("Could not load skills guard scanner", f"({exc})")
+        return
+
+    scanned = 0
+    flagged = 0
+    for name in sorted(agent_created):
+        skill_dir = active_index.get(name)
+        if skill_dir is None:
+            continue
+        if scanned >= _SKILL_GUARD_SCAN_LIMIT:
+            break
+        scanned += 1
+        try:
+            result = scan_skill(skill_dir, source="agent-created")
+        except Exception:
+            continue
+        verdict = str(getattr(result, "verdict", "") or "").lower()
+        findings = list(getattr(result, "findings", []) or [])
+        severe = [
+            finding for finding in findings
+            if str(getattr(finding, "severity", "")).lower() in {"critical", "high"}
+        ]
+        if verdict in {"dangerous", "caution"} or severe:
+            flagged += 1
+            check_warn(
+                f"Agent-created skill '{name}' has guard findings",
+                f"({verdict or 'review'}, {len(severe)} high/critical)",
+            )
+            issues.append(f"Review agent-created skill '{name}' with the skills guard before relying on it.")
+    if scanned and not flagged:
+        check_ok(f"Agent-created skill guard scan clean ({scanned} checked)")
+    if len(agent_created) > scanned:
+        check_info(f"Skipped {len(agent_created) - scanned} additional agent-created skill(s) after scan cap")
+
+
+def _check_optimizer_audit(issues: list[str]) -> None:
+    """Audit local optimization signals that depend on this profile's actual setup."""
+    _section("Optimizer Audit")
+    config = _read_doctor_config()
+    model_snapshot = _check_provider_model_budget(config, issues)
+    _check_mcp_server_availability(config, issues)
+    _check_context_compression_risk(config, model_snapshot, issues)
+    _check_scheduled_job_model_pins(config, model_snapshot, issues)
+
+
 def _check_long_term_optimization(issues: list[str]) -> None:
     """Surface slow setup drift that makes long-running Hermes profiles worse."""
     _section("Long-Term Optimization")
@@ -379,10 +781,11 @@ def _check_long_term_optimization(issues: list[str]) -> None:
         if not path.exists():
             check_info(f"{filename} not created yet (no Tier-1 memory pressure)")
             continue
-        char_count = _read_memory_char_count(path)
-        if char_count is None:
+        stats = _memory_file_stats(path)
+        if stats is None:
             check_warn(f"{filename} could not be read", f"({display_path})")
             continue
+        char_count = int(stats["chars"])
         ratio = char_count / limit if limit else 0
         detail = f"({char_count:,}/{limit:,} chars, {ratio:.0%})"
         if ratio >= 1:
@@ -393,9 +796,22 @@ def _check_long_term_optimization(issues: list[str]) -> None:
             issues.append(f"Curate {display_path}; keep it below about 80% of its configured limit.")
         else:
             check_ok(f"{filename} has Tier-1 memory headroom", detail)
+        entries = int(stats["entries"])
+        duplicates = int(stats["duplicates"])
+        avg_chars = float(stats["avg_chars"])
+        if duplicates:
+            check_warn(f"{filename} contains duplicate memory entries", f"({duplicates} duplicate(s))")
+            issues.append(f"Deduplicate {display_path}; duplicate entries waste Tier-1 memory.")
+        elif entries >= _MEMORY_FRAGMENTED_ENTRY_COUNT and avg_chars < _MEMORY_FRAGMENTED_AVG_CHARS:
+            check_warn(
+                f"{filename} memory looks fragmented",
+                f"({entries} entries, {avg_chars:.0f} chars avg)",
+            )
+            issues.append(f"Consolidate short overlapping entries in {display_path}.")
 
     skills_dir = HERMES_HOME / "skills"
-    active_skills = _active_skill_names(skills_dir)
+    active_index = _active_skill_index(skills_dir)
+    active_skills = set(active_index)
     active_count = len(active_skills)
     if not skills_dir.exists():
         check_info("Local skills directory not created yet")
@@ -428,6 +844,8 @@ def _check_long_term_optimization(issues: list[str]) -> None:
         check_ok(f"{len(agent_created)} curator-managed agent-created skill(s) tracked")
     elif active_count:
         check_info("No curator-managed agent-created skills tracked yet")
+
+    _check_agent_skill_guard_health(cfg, active_index, agent_created, issues)
 
     curator_cfg = cfg.get("curator") if isinstance(cfg, dict) else {}
     curator_enabled = True
@@ -2567,6 +2985,7 @@ def run_doctor(args):
         except Exception as _e:
             check_warn(f"{_active_memory_provider} check failed", str(_e))
 
+    _check_optimizer_audit(issues)
     _check_long_term_optimization(issues)
 
     try:
