@@ -339,6 +339,114 @@ def test_long_term_optimization_accepts_recent_curator_run(monkeypatch, tmp_path
     assert all("curator run --dry-run" not in issue for issue in issues)
 
 
+def test_optimizer_audit_flags_provider_context_mcp_and_cron_drift(
+    monkeypatch, tmp_path, capsys
+):
+    home = tmp_path / ".hermes"
+    cron_dir = home / "cron"
+    cron_dir.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "model:\n"
+        "  provider: openrouter\n"
+        "  default: anthropic/claude-sonnet-4\n"
+        "  context_length: 32000\n"
+        "  max_tokens: 20000\n"
+        "compression:\n"
+        "  enabled: false\n"
+        "context_file_max_chars: 500000\n"
+        "mcp_servers:\n"
+        "  missing:\n"
+        "    command: definitely-not-a-real-mcp-binary\n",
+        encoding="utf-8",
+    )
+    (cron_dir / "jobs.json").write_text(
+        json.dumps(
+            {
+                "jobs": [
+                    {
+                        "id": "daily",
+                        "name": "Daily research",
+                        "enabled": True,
+                        "no_agent": False,
+                        "provider": None,
+                        "model": None,
+                        "provider_snapshot": "anthropic",
+                        "model_snapshot": "claude-sonnet-4",
+                    }
+                ]
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    fake_window = SimpleNamespace(label="API key quota", used_percent=95)
+    fake_usage = SimpleNamespace(
+        unavailable_reason=None,
+        windows=(fake_window,),
+        details=("Credits balance: $0.00",),
+    )
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "_DHH", str(home))
+    monkeypatch.setattr(doctor, "_fetch_doctor_account_usage", lambda *a, **kw: fake_usage)
+
+    issues = []
+    doctor._check_optimizer_audit(issues)
+
+    out = capsys.readouterr().out
+    assert "Optimizer Audit" in out
+    assert "Active model pinned in config" in out
+    assert "openrouter account usage available" in out
+    assert "openrouter API key quota nearly exhausted" in out
+    assert "MCP server 'missing' command not found" in out
+    assert "Automatic context compression disabled" in out
+    assert "Active model has a small context window" in out
+    assert "max_tokens reserves a large share of the window" in out
+    assert "context_file_max_chars may crowd the prompt" in out
+    assert "1 scheduled job(s) follow global provider/model" in out
+    assert "1 scheduled job(s) have provider/model drift" in out
+    assert any("quota is 95% used" in issue for issue in issues)
+    assert any("mcp_servers.missing.command" in issue for issue in issues)
+    assert any("compression.enabled" in issue for issue in issues)
+    assert any("provider/model drift" in issue for issue in issues)
+
+
+def test_long_term_optimization_scans_agent_created_skill_guard_findings(
+    monkeypatch, tmp_path, capsys
+):
+    home = tmp_path / ".hermes"
+    skills = home / "skills"
+    skill_dir = skills / "agent" / "risky"
+    skill_dir.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "skills:\n"
+        "  guard_agent_created: true\n",
+        encoding="utf-8",
+    )
+    (skill_dir / "SKILL.md").write_text(
+        "---\nname: risky\ndescription: risky test\n---\n\nUse it.\n",
+        encoding="utf-8",
+    )
+    (skills / ".usage.json").write_text(
+        json.dumps({"risky": {"created_by": "agent"}}),
+        encoding="utf-8",
+    )
+
+    fake_finding = SimpleNamespace(severity="critical")
+    fake_scan = SimpleNamespace(verdict="dangerous", findings=[fake_finding])
+
+    monkeypatch.setattr(doctor, "HERMES_HOME", home)
+    monkeypatch.setattr(doctor, "_DHH", str(home))
+    monkeypatch.setattr("tools.skills_guard.scan_skill", lambda *a, **kw: fake_scan)
+
+    issues = []
+    doctor._check_long_term_optimization(issues)
+
+    out = capsys.readouterr().out
+    assert "Agent-created skill 'risky' has guard findings" in out
+    assert "skills.guard_agent_created: false" not in out
+    assert any("Review agent-created skill 'risky'" in issue for issue in issues)
+
+
 def test_check_gateway_service_linger_warns_when_disabled(monkeypatch, tmp_path, capsys):
     unit_path = tmp_path / "hermes-gateway.service"
     unit_path.write_text("[Unit]\n")
