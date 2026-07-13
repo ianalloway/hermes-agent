@@ -9,9 +9,8 @@
  *
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  * Run from the nix devshell:
- *   sandbox --persistent -- npx playwright test e2e/boot.spec.ts --reporter=list
+ *   npm exec playwright test e2e/boot.spec.ts --reporter=list
  */
-
 import { expect, test } from '@playwright/test'
 
 import {
@@ -58,17 +57,7 @@ test.describe('dev-mode boot with mock backend', () => {
   })
 
   test('screenshot after boot', async () => {
-    // Use a screenshot without waiting for fonts — the default
-    // page.screenshot() waits for fonts to load, which can hang in
-    // headless Electron. page.screenshot({ type: 'png', timeout: 10000 })
-    // with a shorter timeout is more reliable.
-    const screenshot = await fixture!.page.screenshot({ timeout: 10_000 }).catch(() => null)
-    if (screenshot) {
-      expect(screenshot.byteLength).toBeGreaterThan(0)
-    } else {
-      // If screenshot fails (e.g. GPU issues in headless), just skip —
-      // the important tests are the boot and interaction ones above.
-      test.skip(true, 'Screenshot timed out — likely a GPU/rendering issue in headless mode')
-    }
+    const screenshot = await fixture!.page.screenshot({ timeout: 30_000 })
+    expect(screenshot.byteLength).toBeGreaterThan(0)
   })
 })

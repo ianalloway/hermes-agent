@@ -48,8 +48,7 @@
     "test": "vitest run",
     "preview": "node scripts/assert-root-install.mjs && vite preview --host 127.0.0.1 --port 4174",
     "check": "npm run typecheck && npm run test && npm run test:desktop:all && npm run build",
-    "test:e2e": "playwright test e2e/",
-    "test:e2e:headed": "cross-env HEADED=1 playwright test e2e/"
+    "test:e2e": "playwright test e2e/"
   },
   "dependencies": {
     "@assistant-ui/react": "^0.14.23",
@@ -124,7 +123,7 @@
   "devDependencies": {
     "@electron/rebuild": "^4.0.6",
     "@eslint/js": "^9.39.4",
-    "@playwright/test": "^1.61.0",
+    "@playwright/test": "=1.58.2",
     "@testing-library/dom": "^10.4.0",
     "@testing-library/react": "^16.3.2",
     "@types/d3-force": "^3.0.10",

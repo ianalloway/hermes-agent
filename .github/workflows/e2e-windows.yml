@@ -302,7 +302,7 @@ jobs:
       - name: Launch installed app and run e2e
         if: false
         working-directory: source/apps/desktop
-        run: npx playwright test e2e/ --reporter=list
+        run: npm exec playwright test e2e/ --reporter=list
         env:
           # Point the e2e spec at the desktop binary that the installer built.
           HERMES_E2E_INSTALL_ROOT: ${{ env.HERMES_HOME }}\hermes-agent

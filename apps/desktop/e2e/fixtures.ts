@@ -275,7 +275,6 @@ async function launchDesktop(
       DESKTOP_ROOT, // `electron .` — the `.` is the desktop package dir
       '--disable-gpu',
       '--no-sandbox',
-      '--disable-software-rasterizer',
     ],
     env,
     cwd: DESKTOP_ROOT,
@@ -471,7 +470,7 @@ export async function setupPackagedApp(): Promise<PackagedAppFixture> {
 
   const app = await _electron.launch({
     executablePath: PACKAGED_BINARY_PATH,
-    args: ['--disable-gpu', '--no-sandbox', '--disable-software-rasterizer'],
+    args: ['--disable-gpu', '--no-sandbox'],
     env,
   })
 
