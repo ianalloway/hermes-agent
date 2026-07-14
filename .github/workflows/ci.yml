@@ -79,6 +79,12 @@ jobs:
     if: needs.detect.outputs.frontend == 'true'
     uses: ./.github/workflows/js-tests.yml
 
+  e2e-desktop:
+    name: Desktop E2E
+    needs: detect
+    if: needs.detect.outputs.frontend == 'true'
+    uses: ./.github/workflows/e2e-desktop.yml
+
   docs-site:
     name: Docs Site
     needs: detect
@@ -149,6 +155,7 @@ jobs:
       - tests
       - lint
       - js-tests
+      - e2e-desktop
       - docs-site
       - history-check
       - contributor-check
