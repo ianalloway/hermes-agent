@@ -506,6 +506,15 @@ class EmailAdapter(BasePlatformAdapter):
             # Fallback: just clear old entries if sort fails
             self._seen_uids = set(list(self._seen_uids)[-self._seen_uids_max // 2:])
 
+    def _connect_imap(self) -> imaplib.IMAP4_SSL:
+        """Open IMAP with trusted CA and hostname verification before login."""
+        return imaplib.IMAP4_SSL(
+            self._imap_host,
+            self._imap_port,
+            ssl_context=ssl.create_default_context(),
+            timeout=30,
+        )
+
     def _connect_smtp(self) -> smtplib.SMTP:
         """Create an SMTP connection, selecting the correct protocol for the port.
 
@@ -582,7 +591,7 @@ class EmailAdapter(BasePlatformAdapter):
 
         try:
             # Test IMAP connection
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = self._connect_imap()
             imap.login(self._address, self._password)
             _send_imap_id(imap)
             # Mark all existing messages as seen so we only process new ones
@@ -651,7 +660,7 @@ class EmailAdapter(BasePlatformAdapter):
         """Fetch new (unseen) messages from IMAP. Runs in executor thread."""
         results = []
         try:
-            imap = imaplib.IMAP4_SSL(self._imap_host, self._imap_port, timeout=30)
+            imap = self._connect_imap()
             try:
                 imap.login(self._address, self._password)
                 _send_imap_id(imap)
