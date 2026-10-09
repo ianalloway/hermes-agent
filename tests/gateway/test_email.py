@@ -13,6 +13,7 @@ Covers:
 """
 
 import os
+import ssl
 import unittest
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
@@ -1015,6 +1016,36 @@ class TestConnectDisconnect(unittest.TestCase):
             if adapter._poll_task:
                 adapter._poll_task.cancel()
 
+    def test_connect_verifies_imap_certificate_before_login(self):
+        """The startup IMAP session must reject untrusted or wrong-host certificates."""
+        import asyncio
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap) as create_imap, \
+             patch("smtplib.SMTP"):
+            self.assertTrue(asyncio.run(adapter.connect()))
+            adapter._running = False
+            if adapter._poll_task:
+                adapter._poll_task.cancel()
+
+        self.assertGreaterEqual(create_imap.call_count, 1)
+        for call in create_imap.call_args_list:
+            context = call.kwargs["ssl_context"]
+            self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+            self.assertTrue(context.check_hostname)
+        mock_imap.login.assert_any_call("hermes@test.com", "secret")
+
+    def test_connect_rejects_invalid_imap_certificate(self):
+        """A TLS certificate error must stop startup before SMTP authentication."""
+        import asyncio
+        adapter = self._make_adapter()
+        with patch("imaplib.IMAP4_SSL", side_effect=ssl.SSLCertVerificationError("bad certificate")), \
+             patch("smtplib.SMTP") as create_smtp:
+            self.assertFalse(asyncio.run(adapter.connect()))
+        create_smtp.assert_not_called()
+
     def test_connect_imap_failure(self):
         """IMAP connection failure returns False."""
         import asyncio
@@ -1109,6 +1140,20 @@ class TestFetchNewMessages(unittest.TestCase):
             results = adapter._fetch_new_messages()
 
         self.assertEqual(results, [])
+
+    def test_fetch_verifies_imap_certificate_before_login(self):
+        """Polling opens a separate IMAP session with the same TLS checks."""
+        adapter = self._make_adapter()
+        mock_imap = MagicMock()
+        mock_imap.uid.return_value = ("OK", [b""])
+
+        with patch("imaplib.IMAP4_SSL", return_value=mock_imap) as create_imap:
+            self.assertEqual(adapter._fetch_new_messages(), [])
+
+        context = create_imap.call_args.kwargs["ssl_context"]
+        self.assertEqual(context.verify_mode, ssl.CERT_REQUIRED)
+        self.assertTrue(context.check_hostname)
+        mock_imap.login.assert_called_once_with("hermes@test.com", "secret")
 
     def test_fetch_handles_imap_error(self):
         """IMAP errors should be caught and return empty list."""
