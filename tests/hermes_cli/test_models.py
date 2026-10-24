@@ -1,5 +1,6 @@
 """Tests for the hermes_cli models module."""
 
+import json
 from unittest.mock import patch, MagicMock
 
 from hermes_cli.nous_account import NousPortalAccountInfo
@@ -59,6 +60,14 @@ class TestOpenRouterModels:
 
 class TestFetchOpenRouterModels:
     def test_live_fetch_recomputes_free_tags(self, monkeypatch):
+        # Both catalog inputs belong to the fixture. The deployed manifest can
+        # remove or rename models independently of this pricing-refresh test.
+        curated = [
+            ("test/paid-first", "free"),
+            ("test/paid-second", "free"),
+            ("test/zero-cost", ""),
+        ]
+
         class _Resp:
             def __enter__(self):
                 return self
@@ -67,16 +76,25 @@ class TestFetchOpenRouterModels:
                 return False
 
             def read(self):
-                return b'{"data":[{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}},{"id":"nvidia/nemotron-3-super-120b-a12b:free","pricing":{"prompt":"0","completion":"0"}}]}'
+                return json.dumps({"data": [
+                    {"id": "test/paid-first", "pricing": {"prompt": "0.000015", "completion": "0.000075"}},
+                    {"id": "test/paid-second", "pricing": {"prompt": "0.000000325", "completion": "0.00000195"}},
+                    {"id": "test/zero-cost", "pricing": {"prompt": "0", "completion": "0"}},
+                    {"id": "test/not-curated", "pricing": {"prompt": "0", "completion": "0"}},
+                ]}).encode()
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=curated),
+            patch("hermes_cli.models.get_preferred_silent_default_model", return_value="test/default"),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
             models = fetch_openrouter_models(force_refresh=True)
 
         assert models == [
-            ("anthropic/claude-opus-4.8", "recommended"),
-            ("qwen/qwen3.7-max", ""),
-            ("nvidia/nemotron-3-super-120b-a12b:free", "free"),
+            ("test/paid-first", "recommended"),
+            ("test/paid-second", ""),
+            ("test/zero-cost", "free"),
         ]
 
 
@@ -150,6 +168,12 @@ class TestFetchOpenRouterModels:
         as 'unknown → allow' prevents the picker from silently emptying on
         those gateways.
         """
+        curated = [
+            ("test/known-tools", ""),
+            ("test/legacy-a", ""),
+            ("test/legacy-b", ""),
+        ]
+
         class _Resp:
             def __enter__(self):
                 return self
@@ -158,21 +182,24 @@ class TestFetchOpenRouterModels:
                 return False
 
             def read(self):
-                # No supported_parameters field at all on either entry.
-                return (
-                    b'{"data":['
-                    b'{"id":"anthropic/claude-opus-4.8","pricing":{"prompt":"0.000015","completion":"0.000075"}},'
-                    b'{"id":"qwen/qwen3.7-max","pricing":{"prompt":"0.000000325","completion":"0.00000195"}}'
-                    b']}'
-                )
+                # Keep one explicitly tool-capable control so rejecting the
+                # missing fields cannot be hidden by the all-filtered fallback.
+                return json.dumps({"data": [
+                    {"id": "test/known-tools", "supported_parameters": ["tools"]},
+                    {"id": "test/legacy-a"},
+                    {"id": "test/legacy-b"},
+                ]}).encode()
 
         monkeypatch.setattr(_models_mod, "_openrouter_catalog_cache", None)
-        with patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()):
+        with (
+            patch("hermes_cli.model_catalog.get_curated_openrouter_models", return_value=curated),
+            patch("hermes_cli.models.get_preferred_silent_default_model", return_value="test/default"),
+            patch("hermes_cli.models._urlopen_model_catalog_request", return_value=_Resp()),
+        ):
             models = fetch_openrouter_models(force_refresh=True)
 
         ids = [mid for mid, _ in models]
-        assert "anthropic/claude-opus-4.8" in ids
-        assert "qwen/qwen3.7-max" in ids
+        assert ids == [mid for mid, _ in curated]
 
 
 class TestOpenRouterToolSupportHelper:
