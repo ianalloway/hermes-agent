@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useRef, useState, useMemo } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useRef, useState, useMemo } from "react";
 import {
   Code,
   Download,
@@ -101,13 +101,27 @@ function CategoryIcon({
 /*  Component                                                          */
 /* ------------------------------------------------------------------ */
 
+function orderedCategories(
+  schema: Record<string, Record<string, unknown>>,
+  categoryOrder: string[],
+) {
+  const allCats = [
+    ...new Set(
+      Object.values(schema).map((s) => String(s.category ?? "general")),
+    ),
+  ];
+  const ordered = categoryOrder.filter((c) => allCats.includes(c));
+  const extra = allCats.filter((c) => !categoryOrder.includes(c)).toSorted();
+  return [...ordered, ...extra];
+}
+
 export default function ConfigPage() {
   const [config, setConfig] = useState<Record<string, unknown> | null>(null);
   const [schema, setSchema] = useState<Record<
     string,
     Record<string, unknown>
   > | null>(null);
-  const [categoryOrder, setCategoryOrder] = useState<string[]>([]);
+  const [categories, setCategories] = useState<string[]>([]);
   const [defaults, setDefaults] = useState<Record<string, unknown> | null>(
     null,
   );
@@ -179,7 +193,9 @@ export default function ConfigPage() {
         >;
         delete fields["memory.provider"];
         setSchema(fields);
-        setCategoryOrder(resp.category_order ?? []);
+        const ordered = orderedCategories(fields, resp.category_order ?? []);
+        setCategories(ordered);
+        setActiveCategory((selected) => selected || ordered[0] || "");
       })
       .catch(() => {});
     api
@@ -202,37 +218,16 @@ export default function ConfigPage() {
       .catch(() => {});
   }, []);
 
-  // Set active category when categories load
+  const reportYamlError = useEffectEvent(() => showToast(t.config.failedToLoadRaw, "error"));
   useEffect(() => {
-    if (categoryOrder.length > 0 && !activeCategory) {
-      setActiveCategory(categoryOrder[0]);
-    }
-  }, [categoryOrder, activeCategory]);
-
-  // Load YAML when switching to YAML mode
-  useEffect(() => {
-    if (yamlMode) {
-      setYamlLoading(true);
-      api
-        .getConfigRaw()
-        .then((resp) => setYamlText(resp.yaml))
-        .catch(() => showToast(t.config.failedToLoadRaw, "error"))
-        .finally(() => setYamlLoading(false));
-    }
+    if (!yamlMode) return;
+    let active = true;
+    api.getConfigRaw()
+      .then((resp) => { if (active) setYamlText(resp.yaml); })
+      .catch(() => { if (active) reportYamlError(); })
+      .finally(() => { if (active) setYamlLoading(false); });
+    return () => { active = false; };
   }, [yamlMode]);
-
-  /* ---- Categories ---- */
-  const categories = useMemo(() => {
-    if (!schema) return [];
-    const allCats = [
-      ...new Set(
-        Object.values(schema).map((s) => String(s.category ?? "general")),
-      ),
-    ];
-    const ordered = categoryOrder.filter((c) => allCats.includes(c));
-    const extra = allCats.filter((c) => !categoryOrder.includes(c)).sort();
-    return [...ordered, ...extra];
-  }, [schema, categoryOrder]);
 
   /* ---- Category field counts ---- */
   const categoryCounts = useMemo(() => {
@@ -495,7 +490,10 @@ export default function ConfigPage() {
           <Button
             size="sm"
             outlined={!yamlMode}
-            onClick={() => setYamlMode(!yamlMode)}
+            onClick={() => {
+              if (!yamlMode) setYamlLoading(true);
+              setYamlMode(!yamlMode);
+            }}
             prefix={yamlMode ? <FormInput /> : <Code />}
           >
             {yamlMode ? t.common.form : "YAML"}

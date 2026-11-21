@@ -26,7 +26,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { cn } from "@/lib/utils";
 import { Copy, PanelRight, RotateCcw, X } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useEffectEvent, useMemo, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 
@@ -446,6 +446,17 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+  const initialTerminalTheme = useEffectEvent(() => terminalTheme);
+  const takeLearnSeed = useEffectEvent(() => {
+    const seed = searchParams.get("learn");
+    if (seed) {
+      const next = new URLSearchParams(searchParams);
+      next.delete("learn");
+      setSearchParams(next, { replace: true });
+    }
+    return seed;
+  });
+
   useEffect(() => {
     const host = hostRef.current;
     if (!host) return;
@@ -485,7 +496,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Browser-embedded chat runs the TUI in inline mode. Keep transcript
       // history in xterm.js so the browser wheel can scroll it directly.
       scrollback: 5000,
-      theme: terminalTheme,
+      theme: initialTerminalTheme(),
     });
     termRef.current = term;
 
@@ -955,11 +966,8 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // skill" panel) is typed into the composer as a /learn command once the
       // PTY is up. /learn resolves via command.dispatch → a normal agent turn,
       // so this reuses the existing composer path — no special PTY protocol.
-      const learnSeed = searchParams.get("learn");
+      const learnSeed = takeLearnSeed();
       if (learnSeed) {
-        const next = new URLSearchParams(searchParams);
-        next.delete("learn");
-        setSearchParams(next, { replace: true });
         const cmd = `/learn ${learnSeed}`.trim();
         // Delay so Ink's composer has mounted and grabbed focus before input.
         setTimeout(() => {

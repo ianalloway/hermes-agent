@@ -16,9 +16,8 @@ const onWindows = process.platform === 'win32'
 //   2. Record the sleeper PID to a file so afterEach can clean it up.
 //   3. Exit immediately with status 0.
 //
-// Without resolveOnExit, the await on `'close'` hangs until SIGTERM at
-// timeout — exactly the production wl-copy bug. With resolveOnExit, the
-// promise settles on `'exit'` regardless of the inherited pipes.
+// Capture mode must respect its timeout while a descendant holds the pipes.
+// With resolveOnExit, the promise instead settles on the immediate child's exit.
 
 let scriptDir: string
 let daemonScript: string
@@ -65,20 +64,16 @@ afterEach(() => {
 })
 
 describe.skipIf(onWindows)('execFileNoThrow with daemon-style children', () => {
-  // Skipped because the bug it documents is a forever-hang. Without
-  // resolveOnExit, the 'close' event doesn't fire when the immediate
-  // child has exited but a forked daemon still holds stdio open. Even
-  // SIGTERM at the timeout doesn't help — the daemon survives it. To
-  // verify by hand: remove `it.skip` and watch the test timeout. This
-  // test is here so a reviewer reading the resolveOnExit option knows
-  // *why* every clipboard-tool spawn in osc.ts wires it on.
-  it.skip('(documented hang) without resolveOnExit, await never resolves when daemon inherits stdio', async () => {
-    const pidFile = join(scriptDir, 'sleeper-skip.pid')
-    const result = await execFileNoThrow(daemonScript, [pidFile], { timeout: 300 })
-    trackSleeperPid(pidFile)
+  it('honors the capture timeout when a daemon inherits the pipes', async () => {
+    const pidFile = join(scriptDir, 'sleeper-timeout.pid')
 
-    expect(result.code).toBe(124)
-  })
+    try {
+      const result = await execFileNoThrow(daemonScript, [pidFile], { timeout: 300 })
+      expect(result.code).toBe(124)
+    } finally {
+      trackSleeperPid(pidFile)
+    }
+  }, 2000)
 
   it("settles immediately on 'exit' when resolveOnExit is true, regardless of daemon stdio", async () => {
     const pidFile = join(scriptDir, 'sleeper-exit.pid')

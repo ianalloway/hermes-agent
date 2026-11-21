@@ -1,3 +1,4 @@
+import { useDashboardRequest } from "@/hooks/useDashboardRequest";
 import { useCallback, useEffect, useLayoutEffect, useState } from "react";
 import {
   Brain,
@@ -1066,8 +1067,6 @@ export default function ModelsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<ModelsAnalyticsResponse | null>(null);
   const [aux, setAux] = useState<AuxiliaryModelsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   const [saveKey, setSaveKey] = useState(0);
   // Gate the token/cost UI on `dashboard.show_token_analytics`.  See
   // hermes_cli/config.py for the rationale: the numbers exclude auxiliary
@@ -1089,20 +1088,15 @@ export default function ModelsPage() {
       });
   }, []);
 
-  const load = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    Promise.all([
-      api.getModelsAnalytics(days),
-      api.getAuxiliaryModels().catch(() => null),
-    ])
-      .then(([models, auxData]) => {
-        setData(models);
-        setAux(auxData);
-      })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
-  }, [days]);
+  const request = useCallback(() => Promise.all([
+    api.getModelsAnalytics(days),
+    api.getAuxiliaryModels().catch(() => null),
+  ]), [days]);
+  const { loading, error, refresh: load } = useDashboardRequest(request, ([models, auxData]) => {
+    setData(models);
+    setAux(auxData);
+  });
+
 
   const refreshAux = useCallback(() => {
     api
@@ -1155,10 +1149,6 @@ export default function ModelsPage() {
       setEnd(null);
     };
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   // Model assignments can change outside this page (config editor, chat
   // /model --global, CLI), so refetch them when the page regains focus.

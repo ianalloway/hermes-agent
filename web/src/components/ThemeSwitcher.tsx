@@ -1,3 +1,4 @@
+import { useDropUpAnchor } from "@/hooks/useDropUpAnchor";
 import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { Palette, Check, Type } from "lucide-react";
@@ -32,6 +33,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
+  const dropUpStyle = useDropUpAnchor(wrapperRef, open && dropUp && !useMobileSheet);
 
   const close = useCallback(() => setOpen(false), []);
 
@@ -113,10 +115,10 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
       )}
 
       {open && !useMobileSheet && (() => {
-        const rect = wrapperRef.current?.getBoundingClientRect();
         const dropdown = (
           <div
             ref={dropdownRef}
+            style={dropUpStyle}
             aria-label={sheetTitle}
             className={cn(
               "min-w-[240px] max-h-[70dvh] overflow-y-auto",
@@ -125,11 +127,7 @@ export function ThemeSwitcher({ collapsed = false, dropUp = false }: ThemeSwitch
               dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
             )}
             role="listbox"
-            style={
-              dropUp && rect
-                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
-                : undefined
-            }
+
           >
             <div className="border-b border-current/20 px-3 py-2">
               <Typography
