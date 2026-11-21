@@ -17,6 +17,7 @@ These tests drive the real ``compress_context`` path against a real SessionDB.
 
 from __future__ import annotations
 
+import json
 import os
 from pathlib import Path
 from unittest.mock import MagicMock, patch
@@ -224,3 +225,45 @@ class TestFallbackStreakFollowsRotation:
         assert child != parent
         assert compressor._fallback_compression_streak == 1
         assert db.get_compression_fallback_streak(child) == 1
+
+
+def test_compaction_preserves_active_todos_as_tool_history(tmp_path):
+    from tools.todo_tool import TodoStore
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("todo-rotation", source="cli")
+    agent = _build_agent_with_db(db, "todo-rotation")
+    agent._todo_store.write([
+        {"id": "1", "content": "Review the meeting notes", "status": "pending"},
+        {"id": "2", "content": "Save the agenda", "status": "completed"},
+    ])
+    compressed, _ = agent._compress_context(_msgs(), "sys", approx_tokens=120_000)
+    users = [m["content"] for m in compressed if m["role"] == "user"]
+    assert users == ["[CONTEXT COMPACTION] summary", "tail"]
+
+    call, result = compressed[-2:]
+    assert call["role"] == "assistant"
+    assert call["tool_calls"][0]["function"] == {"name": "todo", "arguments": "{}"}
+    assert result["role"] == "tool" and result["name"] == "todo"
+    assert result["tool_call_id"] == call["tool_calls"][0]["id"]
+    active = [{"id": "1", "content": "Review the meeting notes", "status": "pending"}]
+    assert json.loads(result["content"])["todos"] == active
+    agent._todo_store = TodoStore()
+    agent._hydrate_todo_store(compressed)
+    assert agent._todo_store.read() == active
+
+
+def test_compaction_restores_real_user_before_preserving_todos():
+    from agent.conversation_compression import _ensure_compressed_has_user_turn, _preserve_todo_state
+    from tools.todo_tool import TodoStore
+
+    compressed = [{"role": "assistant", "content": "Summary"}]
+    user = {"role": "user", "content": [{"type": "text", "text": "Plan the trip."}]}
+    _ensure_compressed_has_user_turn([user], compressed)
+    store = TodoStore()
+    _preserve_todo_state(compressed, store.format_for_compaction())
+    assert compressed[-1] == user
+    store.write([{"id": "1", "content": "Check dates", "status": "pending"}])
+    _preserve_todo_state(compressed, store.format_for_compaction())
+    assert [m["role"] for m in compressed] == ["assistant", "user", "assistant", "tool"]
+    assert compressed[1] == user

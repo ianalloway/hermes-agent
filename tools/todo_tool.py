@@ -108,6 +108,14 @@ class TodoStore:
         """Check if there are any items in the list."""
         return bool(self._items)
 
+    def _active_items(self) -> List[Dict[str, str]]:
+        return [item for item in self._items if item["status"] in {"pending", "in_progress"}]
+
+    def format_for_compaction(self) -> Optional[str]:
+        """Return active tasks in the same JSON format as a read-only todo tool result."""
+        items = self._active_items()
+        return _format_todo_result(items) if items else None
+
     def format_for_injection(self) -> Optional[str]:
         """
         Render the todo list for post-compression injection.
@@ -128,10 +136,7 @@ class TodoStore:
 
         # Only inject pending/in_progress items — completed/cancelled ones
         # cause the model to re-do finished work after compression.
-        active_items = [
-            item for item in self._items
-            if item["status"] in {"pending", "in_progress"}
-        ]
+        active_items = self._active_items()
         if not active_items:
             return None
 
@@ -230,7 +235,10 @@ def todo_tool(
     else:
         items = store.read()
 
-    # Build summary counts
+    return _format_todo_result(items)
+
+
+def _format_todo_result(items: List[Dict[str, str]]) -> str:
     pending = sum(1 for i in items if i["status"] == "pending")
     in_progress = sum(1 for i in items if i["status"] == "in_progress")
     completed = sum(1 for i in items if i["status"] == "completed")

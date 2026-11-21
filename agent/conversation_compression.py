@@ -426,9 +426,8 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
 
     The restored turn is appended at the END: the guard only runs when
     ``compressed`` currently ends with an assistant/tool message (any existing
-    user turn — including a todo-snapshot append — short-circuits the
-    ``any()`` check), so appending a user message never creates consecutive
-    same-role messages. ``_fresh_compaction_message_copy`` copies the message
+    user turn short-circuits the ``any()`` check), so appending a user
+    message never creates consecutive same-role messages. ``_fresh_compaction_message_copy`` copies the message
     and strips the ``_db_persisted`` marker so the rotation/in-place flush
     still persists the restored row to the new session (#57491).
 
@@ -454,6 +453,31 @@ def _ensure_compressed_has_user_turn(original_messages: list, compressed: list) 
             "no preserved user turn."
         ),
     })
+
+
+def _preserve_todo_state(compressed: list, todo_result: Optional[str]) -> None:
+    """Pair the stored todo result with a read-only tool call in the transcript."""
+    if not isinstance(todo_result, str) or not todo_result:
+        return
+    from agent.tool_dispatch_helpers import make_tool_result_message
+
+    # Insert after the latest user or completed tool turn. This keeps existing
+    # call/result groups intact and makes this the newest todo result on replay.
+    index = next(
+        i
+        for i in range(len(compressed) - 1, -1, -1)
+        if isinstance(compressed[i], dict) and compressed[i].get("role") in {"user", "tool"}
+    )
+    call_id = f"call_{uuid.uuid4().hex[:24]}"
+    call = {
+        "id": call_id,
+        "type": "function",
+        "function": {"name": "todo", "arguments": "{}"},
+    }
+    compressed[index + 1 : index + 1] = [
+        {"role": "assistant", "content": "", "tool_calls": [call]},
+        make_tool_result_message("todo", todo_result, call_id),
+    ]
 
 
 def compress_context(
@@ -807,10 +831,8 @@ def compress_context(
                         "check auxiliary.compression.model in config.yaml."
                     )
 
-        todo_snapshot = agent._todo_store.format_for_injection()
-        if todo_snapshot:
-            compressed.append({"role": "user", "content": todo_snapshot})
         _ensure_compressed_has_user_turn(messages, compressed)
+        _preserve_todo_state(compressed, agent._todo_store.format_for_compaction())
 
         agent._invalidate_system_prompt()
         new_system_prompt = agent._build_system_prompt(system_message)
