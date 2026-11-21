@@ -1,3 +1,4 @@
+import { useDropUpAnchor } from "@/hooks/useDropUpAnchor";
 import { useState, useRef, useEffect } from "react";
 import { createPortal } from "react-dom";
 import { Check } from "lucide-react";
@@ -5,9 +6,7 @@ import { Button } from "@nous-research/ui/ui/components/button";
 import { BottomSheet } from "@nous-research/ui/ui/components/bottom-sheet";
 import { Typography } from "@nous-research/ui/ui/components/typography/index";
 import { useBelowBreakpoint } from "@nous-research/ui/hooks/use-below-breakpoint";
-import { useI18n } from "@/i18n/context";
-import { LOCALE_META } from "@/i18n";
-import type { Locale } from "@/i18n";
+import { useI18n, LOCALE_META, type Locale } from "@/i18n";
 import { cn } from "@/lib/utils";
 
 /**
@@ -34,6 +33,7 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
   const dropdownRef = useRef<HTMLDivElement>(null);
   const narrowViewport = useBelowBreakpoint(640);
   const useMobileSheet = Boolean(dropUp && narrowViewport);
+  const dropUpStyle = useDropUpAnchor(containerRef, open && dropUp && !useMobileSheet);
 
   useEffect(() => {
     if (!open) return;
@@ -104,21 +104,17 @@ export function LanguageSwitcher({ collapsed = false, dropUp = false }: Language
       )}
 
       {open && !useMobileSheet && (() => {
-        const rect = containerRef.current?.getBoundingClientRect();
         const dropdown = (
           <div
             ref={dropdownRef}
+            style={dropUpStyle}
             aria-label={sheetTitle}
             className={cn(
               "min-w-[10rem] border border-border bg-popover shadow-md py-1 max-h-80 overflow-y-auto",
               dropUp ? "fixed z-[100]" : "absolute z-50 right-0 top-full mt-1",
             )}
             role="listbox"
-            style={
-              dropUp && rect
-                ? { bottom: window.innerHeight - rect.top + 4, left: rect.left }
-                : undefined
-            }
+
           >
             <LanguageSwitcherOptions
               allLocales={allLocales}

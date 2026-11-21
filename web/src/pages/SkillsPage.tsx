@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useState, useMemo, useCallback } from "react";
+import { useEffect, useEffectEvent, useLayoutEffect, useState, useMemo, useCallback } from "react";
 import { useNavigate } from "react-router-dom";
 import {
   Package,
@@ -152,6 +152,8 @@ export default function SkillsPage() {
     profile: selectedProfile,
   } = useProfileScope();
 
+  const reportLoadError = useEffectEvent(() => showToast(t.common.loading, "error"));
+
   useEffect(() => {
     // Promise-chain shape: setState fires only inside async callbacks so the
     // effect body stays lint-clean (react-hooks/set-state-in-effect). On a
@@ -166,7 +168,7 @@ export default function SkillsPage() {
         setSkills(s);
         setToolsets(tsets);
       })
-      .catch(() => !cancelled && showToast(t.common.loading, "error"))
+      .catch(() => !cancelled && reportLoadError())
       .finally(() => !cancelled && setLoading(false));
     return () => {
       cancelled = true;
@@ -1149,6 +1151,7 @@ function HubBrowser({
       {/* ── Detail dialog: preview + scan ── */}
       {detail && (
         <SkillDetailDialog
+          key={detail.identifier}
           result={detail}
           installed={isInstalled(detail.identifier)}
           onClose={() => setDetail(null)}
@@ -1357,7 +1360,6 @@ function SkillDetailDialog({
 
   useEffect(() => {
     let cancelled = false;
-    setPreviewLoading(true);
     api
       .previewSkillFromHub(result.identifier)
       .then((p) => !cancelled && setPreview(p))

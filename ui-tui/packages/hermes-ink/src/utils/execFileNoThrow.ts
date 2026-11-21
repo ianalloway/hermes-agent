@@ -69,12 +69,9 @@ export function execFileNoThrow(
           timedOut = true
           child.kill('SIGTERM')
 
-          // When resolving on exit, SIGTERM-ing a child that has already
-          // exited is a no-op and `'exit'` won't fire again — settle here
-          // so the promise doesn't leak. Safe under settled-guard.
-          if (options.resolveOnExit) {
-            settle(124)
-          }
+          // A descendant can keep the pipes open after the immediate child exits.
+          // The caller's deadline applies to captured output as well as exit-only mode.
+          settle(124)
         }, options.timeout)
       : null
 

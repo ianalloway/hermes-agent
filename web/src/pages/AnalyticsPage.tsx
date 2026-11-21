@@ -1,3 +1,4 @@
+import { useDashboardRequest } from "@/hooks/useDashboardRequest";
 import { useCallback, useEffect, useLayoutEffect, useMemo, useState } from "react";
 import {
   ArrowDown,
@@ -406,8 +407,6 @@ function SkillTable({ skills }: { skills: AnalyticsSkillEntry[] }) {
 export default function AnalyticsPage() {
   const [days, setDays] = useState(30);
   const [data, setData] = useState<AnalyticsResponse | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [error, setError] = useState<string | null>(null);
   // Gated on `dashboard.show_token_analytics` (default off).  When off the
   // page renders an explanation card instead of fetching analytics — the
   // local token counts exclude auxiliary calls and provider retries, so
@@ -426,16 +425,11 @@ export default function AnalyticsPage() {
       .catch(() => setShowTokens(false));
   }, []);
 
-  const load = useCallback(() => {
-    if (!showTokens) return;
-    setLoading(true);
-    setError(null);
-    api
-      .getAnalytics(days)
-      .then(setData)
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
-  }, [days, showTokens]);
+  const request = useCallback(() => api.getAnalytics(days), [days]);
+  const { loading, error, refresh: load } = useDashboardRequest(request, setData, {
+    enabled: showTokens === true,
+  });
+
 
   useLayoutEffect(() => {
     // Period selector + refresh both live in afterTitle so the controls
@@ -476,10 +470,6 @@ export default function AnalyticsPage() {
       setEnd(null);
     };
   }, [days, loading, load, setAfterTitle, setEnd, t.common.refresh, showTokens]);
-
-  useEffect(() => {
-    load();
-  }, [load]);
 
   return (
     <div className="flex flex-col gap-6">

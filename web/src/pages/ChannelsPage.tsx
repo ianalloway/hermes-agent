@@ -668,11 +668,12 @@ function WhatsAppOnboardingPanel({
   const [error, setError] = useState("");
   const [tick, setTick] = useState(0);
 
-  useEffect(() => {
-    if (!setup && phase === "idle" && configuredMode) {
-      setMode(configuredMode);
-    }
-  }, [configuredMode, phase, setup]);
+  const idleMode = !setup && phase === "idle" ? configuredMode : null;
+  const [lastIdleMode, setLastIdleMode] = useState(idleMode);
+  if (idleMode !== lastIdleMode) {
+    setLastIdleMode(idleMode);
+    if (idleMode) setMode(idleMode);
+  }
 
   const updateQr = useCallback(async (payload?: string | null) => {
     if (!payload) return;

@@ -45,21 +45,15 @@ export function ProfileProvider({ children }: { children: ReactNode }) {
     () => searchParams.get("profile") ?? "",
   );
 
-  // Mirror into the api module synchronously on every render where it
-  // changed, so fetches fired by child effects in the same commit see it.
-  setManagementProfile(profile);
-
-  // A profile param arriving via in-app navigation (e.g. the Profiles
-  // page's "Manage skills & tools" linking to /skills?profile=X) must win
-  // over current state — it's an explicit scope request.
+  // Adopt an explicit navigation scope before children fetch for the new page.
+  // Bare links preserve the selection and are synchronized by the effect below.
   const urlProfile = searchParams.get("profile");
-  useEffect(() => {
-    if (urlProfile !== null && urlProfile !== profile) {
-      setManagementProfile(urlProfile);
-      setProfileState(urlProfile);
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [urlProfile]);
+  const [lastUrlProfile, setLastUrlProfile] = useState(urlProfile);
+  if (urlProfile !== lastUrlProfile) {
+    setLastUrlProfile(urlProfile);
+    if (urlProfile !== null) setProfileState(urlProfile);
+  }
+  setManagementProfile(profile);
 
   // Re-assert ?profile= after navigations that dropped it (bare nav links).
   // Runs on every pathname/profile change; no-ops when already in sync.

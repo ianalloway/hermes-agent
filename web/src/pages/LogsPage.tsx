@@ -1,3 +1,4 @@
+import { useDashboardRequest } from "@/hooks/useDashboardRequest";
 import {
   useEffect,
   useLayoutEffect,
@@ -62,28 +63,22 @@ export default function LogsPage() {
   const [lineCount, setLineCount] = useState<(typeof LINE_COUNTS)[number]>(100);
   const [autoRefresh, setAutoRefresh] = useState(false);
   const [lines, setLines] = useState<string[]>([]);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const { t } = useI18n();
   const { setAfterTitle, setEnd } = usePageHeader();
 
-  const fetchLogs = useCallback(() => {
-    setLoading(true);
-    setError(null);
-    api
-      .getLogs({ file, lines: lineCount, level, component })
-      .then((resp) => {
-        setLines(resp.lines);
-        setTimeout(() => {
-          if (scrollRef.current) {
-            scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
-          }
-        }, 50);
-      })
-      .catch((err) => setError(String(err)))
-      .finally(() => setLoading(false));
-  }, [file, lineCount, level, component]);
+  const request = useCallback(
+    () => api.getLogs({ file, lines: lineCount, level, component }),
+    [file, lineCount, level, component],
+  );
+  const { loading, error, refresh: fetchLogs } = useDashboardRequest(
+    request, (response) => setLines(response.lines),
+  );
+
+  useLayoutEffect(() => {
+    const scroll = scrollRef.current;
+    if (scroll) scroll.scrollTop = scroll.scrollHeight;
+  }, [lines]);
 
   useLayoutEffect(() => {
     setAfterTitle(
@@ -142,10 +137,6 @@ export default function LogsPage() {
     t.logs.autoRefresh,
     fetchLogs,
   ]);
-
-  useEffect(() => {
-    fetchLogs();
-  }, [fetchLogs]);
 
   useEffect(() => {
     if (!autoRefresh) return;

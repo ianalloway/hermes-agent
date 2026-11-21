@@ -1,4 +1,5 @@
-import { useEffect, useState, useCallback, useRef } from "react";
+import { useDashboardRequest } from "@/hooks/useDashboardRequest";
+import { useState } from "react";
 import {
   ShieldCheck,
   ShieldOff,
@@ -51,28 +52,17 @@ function formatExpiresAt(
 
 export function OAuthProvidersCard({ onError, onSuccess }: Props) {
   const [providers, setProviders] = useState<OAuthProvider[] | null>(null);
-  const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState<string | null>(null);
   const [loginFor, setLoginFor] = useState<OAuthProvider | null>(null);
   const [disconnectTarget, setDisconnectTarget] =
     useState<OAuthProvider | null>(null);
   const { t } = useI18n();
 
-  const onErrorRef = useRef(onError);
-  onErrorRef.current = onError;
-
-  const refresh = useCallback(() => {
-    setLoading(true);
-    api
-      .getOAuthProviders()
-      .then((resp) => setProviders(resp.providers))
-      .catch((e) => onErrorRef.current?.(`Failed to load providers: ${e}`))
-      .finally(() => setLoading(false));
-  }, []);
-
-  useEffect(() => {
-    refresh();
-  }, [refresh]);
+  const { loading, refresh } = useDashboardRequest(
+    api.getOAuthProviders,
+    (response) => setProviders(response.providers),
+    { onError: (error) => onError?.(`Failed to load providers: ${error}`) },
+  );
 
   const handleDisconnect = async (provider: OAuthProvider) => {
     setBusyId(provider.id);
